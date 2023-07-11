@@ -16,12 +16,15 @@ import { Server, Socket } from 'socket.io';
 type Position = { x: number; y: number; z: 0 };
 type State = { position: Position; lastActivity?: Date };
 
-type Direction = 'up' | 'down' | 'left' | 'right';
+type Direction = 'up' | 'down' | 'left' | 'right' | 'up-right' | 'up-left' | 'down-right' | 'down-left';
 type Moving = { direction: Direction; speed: 1 };
-type Data = { moving: Moving };
+type MoveData = { moving: Moving };
 
-type User = { id: string; state: State; queue: Data[]; client?: Socket };
-type UserModel = { id: string; state: State };
+type User = { id: string; state: State; moveQueue: MoveData[]; client?: Socket };
+
+const ONE_MINUTE = 60 * 1000;
+const ONE_HOUR = ONE_MINUTE * 60;
+const UPDATE_STATE_INTERVAL_MS = 30;
 
 @WebSocketGateway({
   cors: {
@@ -43,20 +46,43 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   server: Server;
 
   constructor() {
-    setInterval(this.cleanupInactiveUsers.bind(this), 60 * 1000); // 1분마다 실행
+    setInterval(this.removeInactiveUsers.bind(this), ONE_MINUTE);
+    setInterval(this.updateAndBroadcastUsersState.bind(this), UPDATE_STATE_INTERVAL_MS);
   }
 
-  private cleanupInactiveUsers() {
+  private removeInactiveUsers() {
     const now = new Date();
     for (const id in this.users) {
-      const lastActivity = this.users[id].state.lastActivity;
+      const user = this.users[id];
+      const lastActivity = user.state.lastActivity;
       if (lastActivity) {
-        const diff = now.getTime() - lastActivity.getTime();
-        if (diff > 60 * 60 * 1000) {
-          this.users[id].client?.disconnect();
-          this.deleteUser(id);
+        const timeSinceLastActivity = now.getTime() - lastActivity.getTime();
+        if (timeSinceLastActivity > ONE_HOUR) {
+          user.client?.disconnect();
+          this.removeUser(id);
         }
       }
+    }
+  }
+
+  private updateAndBroadcastUsersState() {
+    for (const id in this.users) {
+      const user = this.users[id];
+      if (user) {
+        this.updateUserState(user);
+      }
+    }
+    this.broadcastUsersState();
+  }
+
+  private broadcastUsersState() {
+    const response = Object.values(this.users).map((user) => ({
+      id: user.id,
+      state: user.state,
+    }));
+
+    for (const id in this.users) {
+      this.users?.[id]?.client?.emit('state', response);
     }
   }
 
@@ -64,27 +90,19 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     const { id } = client;
     if (this.users[id]) {
       client.disconnect();
-      this.deleteUser(id);
+      this.removeUser(id);
     }
 
     const user = this.createUser(id, client);
     this.users[id] = user;
-
-    for (const id in this.users) {
-      const user = this.users?.[id];
-      client.emit('state', {
-        id: user.id,
-        state: user.state,
-      });
-    }
   }
 
   handleDisconnect(@ConnectedSocket() client: Socket) {
     const { id } = client;
-    this.deleteUser(id);
+    this.removeUser(id);
   }
 
-  private deleteUser(id: string) {
+  private removeUser(id: string) {
     delete this.users?.[id];
   }
 
@@ -98,7 +116,7 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     return {
       id: id,
       state: { position, lastActivity: new Date() },
-      queue: [],
+      moveQueue: [],
       client,
     };
   }
@@ -106,67 +124,75 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   private directionMap: {
     [direction in Direction]: (position: Position) => Position;
   } = {
-    up: (position) => ({
-      ...position,
-      y: Math.min(position.y + 1, this.board.y.max),
-    }),
-    down: (position) => ({
-      ...position,
-      y: Math.max(position.y - 1, this.board.y.min),
-    }),
-    left: (position) => ({
-      ...position,
-      x: Math.max(position.x - 1, this.board.x.min),
-    }),
-    right: (position) => ({
-      ...position,
-      x: Math.min(position.x + 1, this.board.x.max),
-    }),
-  };
+      up: (position) => ({
+        ...position,
+        y: Math.min(position.y + 1, this.board.y.max),
+      }),
+      down: (position) => ({
+        ...position,
+        y: Math.max(position.y - 1, this.board.y.min),
+      }),
+      left: (position) => ({
+        ...position,
+        x: Math.max(position.x - 1, this.board.x.min),
+      }),
+      right: (position) => ({
+        ...position,
+        x: Math.min(position.x + 1, this.board.x.max),
+      }),
+      'up-right': (position) => ({
+        ...position,
+        y: Math.min(position.y + 1, this.board.y.max),
+        x: Math.min(position.x + 1, this.board.x.max),
+      }),
+      'up-left': (position) => ({
+        ...position,
+        y: Math.min(position.y + 1, this.board.y.max),
+        x: Math.max(position.x - 1, this.board.x.min),
+      }),
+      'down-right': (position) => ({
+        ...position,
+        y: Math.max(position.y - 1, this.board.y.min),
+        x: Math.min(position.x + 1, this.board.x.max),
+      }),
+      'down-left': (position) => ({
+        ...position,
+        y: Math.max(position.y - 1, this.board.y.min),
+        x: Math.max(position.x - 1, this.board.x.min),
+      }),
+    };
 
-  private updateUserState(user: User): User {
-    const data = user.queue.shift();
+  private updateUserState(user: User) {
+    if (!user?.moveQueue?.[0]) return;
 
-    if (!data?.moving) return user;
+    const moveData = user.moveQueue.shift();
+
+    if (!moveData?.moving) return;
 
     const {
       moving: { direction },
-    } = data;
+    } = moveData;
 
     const updateFunction = this.directionMap[direction];
     if (updateFunction) {
       user.state.position = updateFunction(user.state.position);
       user.state.lastActivity = new Date();
     }
-
-    return user;
   }
 
   @SubscribeMessage('move')
   onMoveEvent(
     @ConnectedSocket() client: Socket,
-    @MessageBody() data: Data,
-  ): Observable<WsResponse<UserModel>> {
+    @MessageBody() moveData: MoveData,
+  ) {
     const { id } = client;
     const user = this.users[id];
     if (!user) {
       this.logger.error(`User not found: ${id}`);
-      throw new Error('user not found');
+      throw new Error('User not found');
     }
 
-    user.queue.push(data);
+    user.moveQueue.push(moveData);
     user.state.lastActivity = new Date();
-
-    for (const id in this.users) {
-      this.users[id] = this.updateUserState(this.users[id]);
-    }
-
-    const event = 'state';
-    const response = Object.values(this.users).map((user) => ({
-      id: user.id,
-      state: user.state,
-    }));
-
-    return from(response).pipe(map((data) => ({ event, data })));
   }
 }

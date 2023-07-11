@@ -1,6 +1,5 @@
 <!DOCTYPE html>
 <html>
-
 <head>
   <script src="https://cdn.socket.io/4.3.2/socket.io.min.js"
     integrity="sha384-KAZ4DtjNhLChOB/hxXuKqhMLYvx3b5MlT55xPEiNmREKRzeEm+RVPlTnAn0ajQNs"
@@ -12,7 +11,6 @@
       width: 400px;
       border: 1px solid black;
     }
-
     .user {
       position: absolute;
       height: 10px;
@@ -22,7 +20,6 @@
     }
   </style>
 </head>
-
 <body>
   <input id="url" type="text" value="ws://localhost:3000">
   <button id="connect-button">Connect</button>
@@ -30,72 +27,107 @@
 
   <script>
     var socket;
-    var board = document.getElementById('board');
-    var urlInput = document.getElementById('url');
-    var connectButton = document.getElementById('connect-button');
-
     var users = {};
-    var lastMousePosition = null;
 
-    connectButton.onclick = function () {
+    const board = document.getElementById('board');
+    const urlInput = document.getElementById('url');
+    const connectButton = document.getElementById('connect-button');
+
+    function connectSocket() {
+      var url = urlInput.value;
+      socket = io.connect(url);
+
+      socket.on('connect', function () {
+        console.log('Connected');
+        connectButton.textContent = 'Disconnect';
+      });
+
+      socket.on('state', handleState);
+    }
+
+    function disconnectSocket() {
       if (socket && socket.connected) {
         socket.disconnect();
         console.log('Disconnected');
         users = {};
-        lastMousePosition = null;
         connectButton.textContent = 'Connect';
-      } else {
-        var url = urlInput.value;
-        socket = io.connect(url);
-
-        socket.on('connect', function () {
-          console.log('Connected');
-          connectButton.textContent = 'Disconnect';
-        });
-        socket.on('state', function (user) {
-          console.log('Received data: ', user);
-          users[user.id] = user;
-
-          board.innerHTML = '';
-          board.offsetWidthCenter = board.offsetWidth / 2;
-          board.offsetHeightCenter = board.offsetHeight / 2;
-          board.widthScale = board.offsetWidth / 20;
-          board.heightScale = board.offsetHeight / 20;
-
-          for (var id in users) {
-            var user = users[id];
-            var el = document.createElement('div');
-            el.className = 'user';
-            el.style.left = (board.offsetWidthCenter + user.state.position.x * board.widthScale) + 'px';
-            el.style.top = (board.offsetHeightCenter - user.state.position.y * board.heightScale) + 'px';
-            el.textContent = user.id;
-            board.appendChild(el);
-          }
-        });
       }
-    };
+    }
 
-    window.onkeydown = function (event) {
-      let direction = null;
-      switch (event.key) {
-        case 'ArrowUp':
-          direction = 'up';
-          break;
-        case 'ArrowDown':
-          direction = 'down';
-          break;
-        case 'ArrowLeft':
-          direction = 'left';
-          break;
-        case 'ArrowRight':
-          direction = 'right';
-          break;
-      }
+    function handleState(usersState) {
+      console.log('Received data: ', usersState);
+      users = {};
+
+      board.innerHTML = '';
+      board.offsetWidthCenter = board.offsetWidth / 2;
+      board.offsetHeightCenter = board.offsetHeight / 2;
+      board.widthScale = board.offsetWidth / 20;
+      board.heightScale = board.offsetHeight / 20;
+
+      usersState.forEach((user) => {
+        users[user.id] = user;
+        addUserToBoard(user);
+      });
+    }
+
+    function addUserToBoard(user) {
+      var el = document.createElement('div');
+      el.className = 'user';
+      el.style.left = (board.offsetWidthCenter + user.state.position.x * board.widthScale) + 'px';
+      el.style.top = (board.offsetHeightCenter - user.state.position.y * board.heightScale) + 'px';
+      el.textContent = user.id;
+      board.appendChild(el);
+    }
+
+    var activeKeys = {};
+
+    function handleKeydown(event) {
+      activeKeys[event.key] = true;
+      let direction = determineDirection();
+
       if (direction && socket && socket.connected) {
         socket.emit('move', { moving: { direction, speed: 1 } });
+      }
+    }
+
+    function handleKeyup(event) {
+      delete activeKeys[event.key];
+    }
+
+    function determineDirection() {
+      let direction = null;
+
+      if (activeKeys['ArrowUp'] && activeKeys['ArrowRight']) {
+        direction = 'up-right';
+      } else if (activeKeys['ArrowUp'] && activeKeys['ArrowLeft']) {
+        direction = 'up-left';
+      } else if (activeKeys['ArrowDown'] && activeKeys['ArrowRight']) {
+        direction = 'down-right';
+      } else if (activeKeys['ArrowDown'] && activeKeys['ArrowLeft']) {
+        direction = 'down-left';
+      } else if (activeKeys['ArrowUp']) {
+        direction = 'up';
+      } else if (activeKeys['ArrowDown']) {
+        direction = 'down';
+      } else if (activeKeys['ArrowLeft']) {
+        direction = 'left';
+      } else if (activeKeys['ArrowRight']) {
+        direction = 'right';
+      }
+
+      return direction;
+    }
+
+    window.onkeydown = handleKeydown;
+    window.onkeyup = handleKeyup;
+
+    connectButton.onclick = function () {
+      if (socket && socket.connected) {
+        disconnectSocket();
+      } else {
+        connectSocket();
       }
     };
   </script>
 </body>
-
 </html>
