@@ -1,92 +1,101 @@
 <!DOCTYPE html>
 <html>
-  <head>
-    <script src="https://cdn.socket.io/4.3.2/socket.io.min.js" integrity="sha384-KAZ4DtjNhLChOB/hxXuKqhMLYvx3b5MlT55xPEiNmREKRzeEm+RVPlTnAn0ajQNs" crossorigin="anonymous"></script>
-    <style>
-      #board {
-        position: relative;
-        height: 400px;
-        width: 400px;
-        border: 1px solid black;
-      }
-      .user {
-        position: absolute;
-        height: 10px;
-        width: 10px;
-        background-color: red;
-        transform: translate(-50%, -50%);
-      }
-    </style>
-  </head>
-  <body>
-    <input id="url" type="text" value="ws://localhost:3000">
-    <button id="connect">Connect</button>
-    <button id="disconnect">Disconnect</button>
-    <div id="board"></div>
 
-    <script>
-      var socket;
-      var board = document.getElementById('board');
-      var urlInput = document.getElementById('url');
-      var connectButton = document.getElementById('connect');
-      var disconnectButton = document.getElementById('disconnect');
+<head>
+  <script src="https://cdn.socket.io/4.3.2/socket.io.min.js"
+    integrity="sha384-KAZ4DtjNhLChOB/hxXuKqhMLYvx3b5MlT55xPEiNmREKRzeEm+RVPlTnAn0ajQNs"
+    crossorigin="anonymous"></script>
+  <style>
+    #board {
+      position: relative;
+      height: 400px;
+      width: 400px;
+      border: 1px solid black;
+    }
 
-      var users = {};
+    .user {
+      position: absolute;
+      height: 10px;
+      width: 10px;
+      background-color: red;
+      transform: translate(-50%, -50%);
+    }
+  </style>
+</head>
 
-      connectButton.onclick = function () {
+<body>
+  <input id="url" type="text" value="ws://localhost:3000">
+  <button id="connect-button">Connect</button>
+  <div id="board"></div>
+
+  <script>
+    var socket;
+    var board = document.getElementById('board');
+    var urlInput = document.getElementById('url');
+    var connectButton = document.getElementById('connect-button');
+
+    var users = {};
+    var lastMousePosition = null;
+
+    connectButton.onclick = function () {
+      if (socket && socket.connected) {
+        socket.disconnect();
+        console.log('Disconnected');
+        users = {};
+        lastMousePosition = null;
+        connectButton.textContent = 'Connect';
+      } else {
         var url = urlInput.value;
         socket = io.connect(url);
 
-        socket.on('connect', function() {
+        socket.on('connect', function () {
           console.log('Connected');
+          connectButton.textContent = 'Disconnect';
         });
-        socket.on('state', function(user) {
+        socket.on('state', function (user) {
           console.log('Received data: ', user);
-          users[user.id] = user; // update user state
+          users[user.id] = user;
 
-          // Clear the board
           board.innerHTML = '';
-          // Draw each user on the board
+          board.offsetWidthCenter = board.offsetWidth / 2;
+          board.offsetHeightCenter = board.offsetHeight / 2;
+          board.widthScale = board.offsetWidth / 20;
+          board.heightScale = board.offsetHeight / 20;
+
           for (var id in users) {
             var user = users[id];
             var el = document.createElement('div');
             el.className = 'user';
-            el.style.left = (200 + user.state.position.x * 10) + 'px';
-            el.style.top = (200 - user.state.position.y * 10) + 'px';
+            el.style.left = (board.offsetWidthCenter + user.state.position.x * board.widthScale) + 'px';
+            el.style.top = (board.offsetHeightCenter - user.state.position.y * board.heightScale) + 'px';
             el.textContent = user.id;
             board.appendChild(el);
           }
         });
+      }
+    };
 
-        window.onkeydown = function(event) {
-          let direction = null;
-          switch (event.key) {
-            case 'ArrowUp':
-              direction = 'up';
-              break;
-            case 'ArrowDown':
-              direction = 'down';
-              break;
-            case 'ArrowLeft':
-              direction = 'left';
-              break;
-            case 'ArrowRight':
-              direction = 'right';
-              break;
-          }
-          if (direction) {
-            socket.emit('move', { moving: { direction, speed: 1 } });
-          }
-        };
-      };
+    window.onkeydown = function (event) {
+      let direction = null;
+      switch (event.key) {
+        case 'ArrowUp':
+          direction = 'up';
+          break;
+        case 'ArrowDown':
+          direction = 'down';
+          break;
+        case 'ArrowLeft':
+          direction = 'left';
+          break;
+        case 'ArrowRight':
+          direction = 'right';
+          break;
+      }
+      if (direction && socket && socket.connected) {
+        socket.emit('move', { moving: { direction, speed: 1 } });
+      }
+    };
+  </script>
+</body>
 
-      disconnectButton.onclick = function() {
-        if (socket) {
-          socket.disconnect();
-          console.log('Disconnected');
-          users = {}; // reset users state
-        }
-      };
-    </script>
-  </body>
 </html>

@@ -14,13 +14,13 @@ import { map } from 'rxjs/operators';
 import { Server, Socket } from 'socket.io';
 
 type Position = { x: number; y: number; z: 0 };
-type State = { position: Position };
+type State = { position: Position; lastActivity?: Date };
 
 type Direction = 'up' | 'down' | 'left' | 'right';
 type Moving = { direction: Direction; speed: 1 };
 type Data = { moving: Moving };
 
-type User = { id: string; state: State; queue: Data[] };
+type User = { id: string; state: State; queue: Data[]; client?: Socket };
 type UserModel = { id: string; state: State };
 
 @WebSocketGateway({
@@ -33,8 +33,6 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
   private users: { [id: string]: User } = {};
 
-  private lastConnectedId: string;
-
   private board = {
     x: { min: -10, max: 10, default: 0 },
     y: { min: -10, max: 10, default: 0 },
@@ -44,57 +42,90 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer()
   server: Server;
 
-  handleConnection(@ConnectedSocket() client: Socket) {
-    this.logger.debug(`connected: ${client.id}`);
+  constructor() {
+    setInterval(this.cleanupInactiveUsers.bind(this), 60 * 1000); // 1분마다 실행
+  }
 
+  private cleanupInactiveUsers() {
+    const now = new Date();
+    for (const id in this.users) {
+      const lastActivity = this.users[id].state.lastActivity;
+      if (lastActivity) {
+        const diff = now.getTime() - lastActivity.getTime();
+        if (diff > 60 * 60 * 1000) {
+          this.users[id].client?.disconnect();
+          this.deleteUser(id);
+        }
+      }
+    }
+  }
+
+  handleConnection(@ConnectedSocket() client: Socket) {
     const { id } = client;
-    const user = this.createUser(id);
+    if (this.users[id]) {
+      client.disconnect();
+      this.deleteUser(id);
+    }
+
+    const user = this.createUser(id, client);
     this.users[id] = user;
-    this.lastConnectedId = id;
+
+    for (const id in this.users) {
+      const user = this.users?.[id];
+      client.emit('state', {
+        id: user.id,
+        state: user.state,
+      });
+    }
   }
 
   handleDisconnect(@ConnectedSocket() client: Socket) {
-    this.logger.debug(`disconnected: ${client.id}`);
-
     const { id } = client;
+    this.deleteUser(id);
+  }
+
+  private deleteUser(id: string) {
     delete this.users?.[id];
   }
 
-  private createUser(id: string): User {
+  private createUser(id: string, client: Socket): User {
     const {
       x: { default: x },
       y: { default: y },
       z: { default: z },
     } = this.board;
     const position: Position = { x, y, z };
-    return { id: id, state: { position }, queue: [] };
+    return {
+      id: id,
+      state: { position, lastActivity: new Date() },
+      queue: [],
+      client,
+    };
   }
 
   private directionMap: {
     [direction in Direction]: (position: Position) => Position;
   } = {
-      up: (position) => ({
-        ...position,
-        y: Math.min(position.y + 1, this.board.y.max),
-      }),
-      down: (position) => ({
-        ...position,
-        y: Math.max(position.y - 1, this.board.y.min),
-      }),
-      left: (position) => ({
-        ...position,
-        x: Math.max(position.x - 1, this.board.x.min),
-      }),
-      right: (position) => ({
-        ...position,
-        x: Math.min(position.x + 1, this.board.x.max),
-      }),
-    };
+    up: (position) => ({
+      ...position,
+      y: Math.min(position.y + 1, this.board.y.max),
+    }),
+    down: (position) => ({
+      ...position,
+      y: Math.max(position.y - 1, this.board.y.min),
+    }),
+    left: (position) => ({
+      ...position,
+      x: Math.max(position.x - 1, this.board.x.min),
+    }),
+    right: (position) => ({
+      ...position,
+      x: Math.min(position.x + 1, this.board.x.max),
+    }),
+  };
 
   private updateUserState(user: User): User {
     const data = user.queue.shift();
-
-    console.log(data?.moving);
 
     if (!data?.moving) return user;
 
@@ -105,9 +136,8 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     const updateFunction = this.directionMap[direction];
     if (updateFunction) {
       user.state.position = updateFunction(user.state.position);
+      user.state.lastActivity = new Date();
     }
-
-    console.debug(user.state.position);
 
     return user;
   }
@@ -117,17 +147,16 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @ConnectedSocket() client: Socket,
     @MessageBody() data: Data,
   ): Observable<WsResponse<UserModel>> {
-    this.logger.debug(`move: ${client.id}`);
-
     const { id } = client;
-    if (!this.users[id]) {
+    const user = this.users[id];
+    if (!user) {
       this.logger.error(`User not found: ${id}`);
       throw new Error('user not found');
     }
 
-    this.users[id].queue.push(data);
+    user.queue.push(data);
+    user.state.lastActivity = new Date();
 
-    /** to do: move this */
     for (const id in this.users) {
       this.users[id] = this.updateUserState(this.users[id]);
     }
